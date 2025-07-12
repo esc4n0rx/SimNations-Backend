@@ -1,16 +1,20 @@
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from config.database import get_db, engine, test_connection
+from config.database import (
+    get_db, engine, test_connection, 
+    ensure_database_exists, create_tables_safely,
+    get_connection_status, print_connection_troubleshooting
+)
 from config.settings import settings
 from utils.data_loader import data_loader
 from models import user, country, state, quiz  # Import all models
 from controllers import auth_controller, quiz_controller, state_controller, user_controller
 import sys
+import time
 
-# Create tables
-from config.database import Base
-Base.metadata.create_all(bind=engine)
+# Não criar tabelas imediatamente - será feito no startup com tratamento de erro
+print("🚀 Inicializando SimNations API...")
 
 app = FastAPI(
     title=settings.APP_NAME,
@@ -39,45 +43,83 @@ app.include_router(state_controller.router)
 async def startup_event():
     """Initialize database with countries and states data"""
     
-    # Testar conexão primeiro
+    print("🔧 Executando startup da aplicação...")
+    
+    # Validar configurações
+    is_valid, validation_message = settings.validate_database_config()
+    if not is_valid:
+        print(f"❌ Configuração inválida: {validation_message}")
+        print("💡 Verifique o arquivo .env")
+        sys.exit(1)
+    
+    # Testar conexão com retry
     print("🔍 Testando conexão com MySQL...")
-    if not test_connection():
-        print("❌ Falha na conexão com MySQL. Verifique as configurações.")
+    if not test_connection(max_retries=3, retry_delay=2):
+        print("❌ Falha na conexão com MySQL após várias tentativas.")
         print("💡 Execute: python scripts/test_connection.py para diagnóstico completo")
+        print("💡 Execute: python scripts/check_env.py para verificar configurações")
         sys.exit(1)
     
     print("✅ Conexão com MySQL estabelecida com sucesso!")
     
+    # Verificar/criar banco de dados
+    print("🔍 Verificando banco de dados...")
+    if not ensure_database_exists():
+        print("❌ Erro ao verificar/criar banco de dados")
+        sys.exit(1)
+    
+    # Criar tabelas
+    if not create_tables_safely():
+        print("❌ Erro ao criar tabelas")
+        print("💡 Execute: python scripts/migrate.py para executar migrations")
+        sys.exit(1)
+    
+    # Carregar dados iniciais
     db = next(get_db())
     try:
-        # Load initial data from JSON
+        print("📊 Carregando dados iniciais...")
         data_loader.populate_database(db)
         print("✅ Database initialized successfully")
     except Exception as e:
-        print(f"❌ Error initializing database: {e}")
-        print("💡 Execute: python scripts/migrate.py para corrigir problemas de schema")
+        print(f"⚠️ Aviso: Erro ao carregar dados iniciais: {e}")
+        print("💡 Dados podem já existir ou há problema no arquivo JSON")
     finally:
         db.close()
+    
+    print("🎉 Startup concluído com sucesso!")
 
 @app.get("/")
 async def root():
     """Root endpoint"""
+    connection_status = get_connection_status()
+    
     return {
         "message": "Welcome to SimNations API",
         "version": settings.APP_VERSION,
         "docs": "/docs",
-        "database": f"Connected to {settings.DB_HOST}:{settings.DB_PORT}"
+        "database": {
+            "host": f"{settings.DB_HOST}:{settings.DB_PORT}",
+            "connected": connection_status["connected"],
+            "mysql_version": connection_status.get("mysql_version")
+        }
     }
 
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
-    db_status = "connected" if test_connection() else "disconnected"
+    connection_status = get_connection_status()
+    
     return {
-        "status": "healthy",
-        "database": db_status,
-        "version": settings.APP_VERSION
+        "status": "healthy" if connection_status["connected"] else "unhealthy",
+        "database": connection_status,
+        "version": settings.APP_VERSION,
+        "timestamp": time.time()
     }
+
+@app.get("/debug/connection")
+async def debug_connection():
+    """Debug endpoint para verificar conexão"""
+    return get_connection_status()
 
 if __name__ == "__main__":
     import uvicorn
@@ -85,6 +127,13 @@ if __name__ == "__main__":
     # Testar conexão antes de iniciar o servidor
     print("🚀 Iniciando SimNations API...")
     print("🔍 Verificando conexão com banco de dados...")
+    
+    # Validar configurações primeiro
+    is_valid, validation_message = settings.validate_database_config()
+    if not is_valid:
+        print(f"❌ Configuração inválida: {validation_message}")
+        print("💡 Execute: python scripts/check_env.py para verificar configurações")
+        sys.exit(1)
     
     if not test_connection():
         print("❌ Não foi possível conectar ao banco de dados!")

@@ -1,5 +1,6 @@
 from pydantic_settings import BaseSettings
 from typing import Optional
+import os
 
 class Settings(BaseSettings):
     # Database Configuration
@@ -9,6 +10,15 @@ class Settings(BaseSettings):
     DB_PASSWORD: str = ""
     DB_NAME: str = "simnations"
     DB_SSL_DISABLED: bool = True
+    
+    # Connection Settings
+    DB_CONNECT_TIMEOUT: int = 30
+    DB_READ_TIMEOUT: int = 30
+    DB_WRITE_TIMEOUT: int = 30
+    DB_POOL_SIZE: int = 5
+    DB_MAX_OVERFLOW: int = 10
+    DB_POOL_TIMEOUT: int = 30
+    DB_POOL_RECYCLE: int = 3600
     
     # Application Settings
     SECRET_KEY: str = "your-super-secret-key-here-change-in-production"
@@ -37,7 +47,41 @@ class Settings(BaseSettings):
             "collation": "utf8mb4_unicode_ci",
             "use_unicode": True,
             "autocommit": False,
+            "connection_timeout": self.DB_CONNECT_TIMEOUT,
+            "read_timeout": self.DB_READ_TIMEOUT,
+            "write_timeout": self.DB_WRITE_TIMEOUT,
             "sql_mode": "STRICT_TRANS_TABLES,NO_ZERO_DATE,NO_ZERO_IN_DATE,ERROR_FOR_DIVISION_BY_ZERO"
+        }
+    
+    def validate_database_config(self) -> tuple[bool, str]:
+        """Valida a configuração do banco de dados"""
+        if not self.DB_HOST:
+            return False, "DB_HOST não pode estar vazio"
+        
+        if not self.DB_USER:
+            return False, "DB_USER não pode estar vazio"
+        
+        if not self.DB_PASSWORD:
+            return False, "DB_PASSWORD não pode estar vazio"
+        
+        if not self.DB_NAME:
+            return False, "DB_NAME não pode estar vazio"
+        
+        if self.DB_PORT <= 0 or self.DB_PORT > 65535:
+            return False, f"DB_PORT deve estar entre 1 e 65535, valor atual: {self.DB_PORT}"
+        
+        return True, "Configuração válida"
+    
+    def get_pymysql_connection_args(self) -> dict:
+        """Retorna argumentos específicos para PyMySQL"""
+        return {
+            "connect_timeout": self.DB_CONNECT_TIMEOUT,
+            "read_timeout": self.DB_READ_TIMEOUT,
+            "write_timeout": self.DB_WRITE_TIMEOUT,
+            "charset": "utf8mb4",
+            "use_unicode": True,
+            "autocommit": False,
+            "ssl_disabled": self.DB_SSL_DISABLED
         }
     
     class Config:
@@ -47,3 +91,9 @@ class Settings(BaseSettings):
 
 # Instância global das configurações
 settings = Settings()
+
+# Validação automática na inicialização
+if __name__ != "__main__":
+    is_valid, message = settings.validate_database_config()
+    if not is_valid:
+        print(f"❌ Erro na configuração do banco: {message}")
